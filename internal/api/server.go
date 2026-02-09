@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/tutu-network/tutu/internal/domain"
 	"github.com/tutu-network/tutu/internal/infra/engine"
 	"github.com/tutu-network/tutu/internal/infra/registry"
@@ -16,14 +17,18 @@ import (
 
 // Server is the TuTu HTTP API server.
 type Server struct {
-	pool    *engine.Pool
-	models  *registry.Manager
+	pool           *engine.Pool
+	models         *registry.Manager
+	metricsEnabled bool
 }
 
 // NewServer creates a new API server.
 func NewServer(pool *engine.Pool, models *registry.Manager) *Server {
 	return &Server{pool: pool, models: models}
 }
+
+// EnableMetrics enables the /metrics Prometheus endpoint.
+func (s *Server) EnableMetrics() { s.metricsEnabled = true }
 
 // Handler returns the chi router with all routes mounted.
 func (s *Server) Handler() http.Handler {
@@ -65,6 +70,11 @@ func (s *Server) Handler() http.Handler {
 		r.Delete("/delete", s.handleOllamaDelete)
 		r.Get("/ps", s.handleOllamaPs)
 	})
+
+	// Prometheus metrics endpoint (Phase 1 — observability)
+	if s.metricsEnabled {
+		r.Handle("/metrics", promhttp.Handler())
+	}
 
 	return r
 }

@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -11,19 +12,37 @@ import (
 	"time"
 
 	"github.com/tutu-network/tutu/internal/api"
+	"github.com/tutu-network/tutu/internal/app/credit"
+	"github.com/tutu-network/tutu/internal/app/executor"
+	"github.com/tutu-network/tutu/internal/health"
 	"github.com/tutu-network/tutu/internal/infra/engine"
+	"github.com/tutu-network/tutu/internal/infra/gossip"
+	_ "github.com/tutu-network/tutu/internal/infra/metrics" // Register Prometheus metrics
+	"github.com/tutu-network/tutu/internal/infra/network"
 	"github.com/tutu-network/tutu/internal/infra/registry"
+	"github.com/tutu-network/tutu/internal/infra/resource"
 	"github.com/tutu-network/tutu/internal/infra/sqlite"
+	"github.com/tutu-network/tutu/internal/security"
 )
 
 // Daemon is the core TuTu runtime. It wires together all services.
 type Daemon struct {
-	Config  Config
-	DB      *sqlite.DB
-	Models  *registry.Manager
-	Pool    *engine.Pool
-	Server  *api.Server
-	cancel  context.CancelFunc
+	Config   Config
+	DB       *sqlite.DB
+	Models   *registry.Manager
+	Pool     *engine.Pool
+	Server   *api.Server
+	cancel   context.CancelFunc
+
+	// Phase 1 components
+	Idle     *resource.IdleDetector
+	Governor *resource.Governor
+	Gossip   *gossip.SWIM
+	Fabric   *network.Fabric
+	Executor *executor.Executor
+	Health   *health.Checker
+	Credit   *credit.Service
+	Keypair  *security.Keypair
 }
 
 // New creates and initializes a Daemon with all services wired.
@@ -67,13 +86,83 @@ func NewWithConfig(cfg Config) (*Daemon, error) {
 	// Initialize API server
 	srv := api.NewServer(pool, mgr)
 
-	return &Daemon{
+	// Enable Prometheus /metrics if configured
+	if cfg.Telemetry.Prometheus {
+		srv.EnableMetrics()
+	}
+
+	d := &Daemon{
 		Config: cfg,
 		DB:     db,
 		Models: mgr,
 		Pool:   pool,
 		Server: srv,
-	}, nil
+	}
+
+	// ─── Phase 1 components ────────────────────────────────────────────
+
+	// Crypto identity (Ed25519)
+	kp, err := security.LoadOrCreateKeypair(tutuHome())
+	if err != nil {
+		log.Printf("[daemon] WARNING: failed to load keypair: %v (gossip signing disabled)", err)
+	}
+	d.Keypair = kp
+
+	// Derive node ID from public key (first 16 hex chars) if not configured
+	nodeID := cfg.Node.ID
+	if nodeID == "" && kp != nil {
+		hex := kp.PublicKeyHex()
+		if len(hex) > 16 {
+			nodeID = "node-" + hex[:16]
+		}
+	}
+	if nodeID == "" {
+		nodeID = "node-local"
+	}
+
+	// Idle detector
+	d.Idle = resource.NewIdleDetector()
+
+	// Resource governor (creates its own idle detector, thermal, battery monitors)
+	govCfg := resource.GovernorConfig{
+		ThermalThrottle:  cfg.Resources.ThermalThrottle,
+		ThermalShutdown:  cfg.Resources.ThermalShutdown,
+		BatteryMinPct:    20, // From architecture spec
+		TickInterval:     5 * time.Second,
+	}
+	d.Governor = resource.NewGovernor(govCfg)
+
+	// Credit service
+	d.Credit = credit.NewService(db)
+
+	// SWIM gossip (created by fabric internally, but kept for direct access)
+	gossipCfg := gossip.DefaultConfig()
+
+	// Network fabric
+	fabricCfg := network.FabricConfig{
+		Enabled:           cfg.Network.Enabled,
+		CloudCoreEndpoint: cfg.Network.CloudCore,
+		HeartbeatInterval: parseDuration(cfg.Network.HeartbeatInterval, 10*time.Second),
+		Region:            cfg.Node.Region,
+		GossipConfig:      gossipCfg,
+	}
+	if kp != nil {
+		d.Fabric = network.NewFabric(fabricCfg, kp, d.Governor)
+	}
+
+	// Task executor
+	execCfg := executor.Config{
+		MaxConcurrent: cfg.API.MaxConcurrent,
+	}
+	if execCfg.MaxConcurrent == 0 {
+		execCfg.MaxConcurrent = 4
+	}
+	d.Executor = executor.New(execCfg, d.Governor, db)
+
+	// Health checker
+	d.Health = health.NewChecker(db, modelsDir)
+
+	return d, nil
 }
 
 // Serve starts the HTTP server and blocks until shutdown.
@@ -83,6 +172,20 @@ func (d *Daemon) Serve(ctx context.Context) error {
 
 	// Start idle reaper in background
 	go d.Pool.IdleReaper(ctx)
+
+	// ─── Phase 1: Start background services ────────────────────────────
+
+	// Health checker (always runs)
+	go d.Health.Run(ctx)
+
+	// Network fabric (if enabled)
+	if d.Config.Network.Enabled {
+		go func() {
+			if err := d.Fabric.Start(ctx); err != nil {
+				log.Printf("[daemon] fabric start error: %v", err)
+			}
+		}()
+	}
 
 	addr := fmt.Sprintf("%s:%d", d.Config.API.Host, d.Config.API.Port)
 
@@ -107,12 +210,24 @@ func (d *Daemon) Serve(ctx context.Context) error {
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer shutdownCancel()
 
+		// Stop Phase 1 components
+		if d.Fabric != nil {
+			d.Fabric.Stop()
+		}
+
 		_ = d.Pool.UnloadAll()
 		_ = httpServer.Shutdown(shutdownCtx)
 		_ = d.DB.Close()
 	}()
 
 	fmt.Printf("TuTu serving on http://%s\n", addr)
+	if d.Config.Network.Enabled {
+		fmt.Printf("  Network: enabled (Cloud Core: %s)\n", d.Config.Network.CloudCore)
+	}
+	if d.Config.Telemetry.Prometheus {
+		fmt.Printf("  Metrics: http://%s/metrics\n", addr)
+	}
+
 	if err := httpServer.ListenAndServe(); err != http.ErrServerClosed {
 		return err
 	}
@@ -123,6 +238,9 @@ func (d *Daemon) Serve(ctx context.Context) error {
 func (d *Daemon) Close() {
 	if d.cancel != nil {
 		d.cancel()
+	}
+	if d.Fabric != nil {
+		d.Fabric.Stop()
 	}
 	if d.Pool != nil {
 		_ = d.Pool.UnloadAll()
@@ -150,4 +268,16 @@ func parseStorageSize(s string) uint64 {
 	default:
 		return val * 1024 * 1024 * 1024 // Assume GB
 	}
+}
+
+// parseDuration parses a duration string, returning a fallback on error.
+func parseDuration(s string, fallback time.Duration) time.Duration {
+	if s == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return fallback
+	}
+	return d
 }

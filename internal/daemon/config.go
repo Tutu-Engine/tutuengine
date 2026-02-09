@@ -20,6 +20,7 @@ type Config struct {
 	Network   NetworkConfig   `toml:"network"`
 	Resources ResourcesConfig `toml:"resources"`
 	Security  SecurityConfig  `toml:"security"`
+	Telemetry TelemetryConfig `toml:"telemetry"`
 }
 
 // NodeConfig identifies this node.
@@ -83,6 +84,13 @@ type SecurityConfig struct {
 	TLS            bool   `toml:"tls"`
 }
 
+// TelemetryConfig controls observability (Phase 1).
+type TelemetryConfig struct {
+	Enabled        bool `toml:"enabled"`
+	Prometheus     bool `toml:"prometheus"`
+	PrometheusPort int  `toml:"prometheus_port"`
+}
+
 // DefaultConfig returns a sensible default configuration.
 func DefaultConfig() Config {
 	homeDir := tutuHome()
@@ -130,6 +138,11 @@ func DefaultConfig() Config {
 			Sandbox:        "process", // "gvisor" when available
 			RequireSigning: true,
 			TLS:            true,
+		},
+		Telemetry: TelemetryConfig{
+			Enabled:        true,
+			Prometheus:     false, // Opt-in: expose /metrics
+			PrometheusPort: 9090,
 		},
 	}
 }
