@@ -1,6 +1,8 @@
 package registry
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -9,6 +11,8 @@ import (
 	"github.com/tutu-network/tutu/internal/infra/sqlite"
 )
 
+// newTestManager creates a Manager backed by a local HTTP test server.
+// Tests never hit the real network — all downloads serve fake GGUF data.
 func newTestManager(t *testing.T) *Manager {
 	t.Helper()
 	dir := t.TempDir()
@@ -20,8 +24,17 @@ func newTestManager(t *testing.T) *Manager {
 	}
 	t.Cleanup(func() { db.Close() })
 
+	// Local HTTP server serving fake GGUF content
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		content := []byte("GGUF-FAKE-MODEL-DATA-FOR-TESTING-" + r.URL.Path)
+		w.WriteHeader(http.StatusOK)
+		w.Write(content)
+	}))
+	t.Cleanup(srv.Close)
+
 	modelsDir := filepath.Join(dir, "models")
 	mgr := NewManager(modelsDir, db)
+	mgr.urlOverride = srv.URL
 	return mgr
 }
 

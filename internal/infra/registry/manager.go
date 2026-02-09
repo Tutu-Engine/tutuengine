@@ -5,12 +5,15 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/tutu-network/tutu/internal/domain"
+	"github.com/tutu-network/tutu/internal/infra/catalog"
 	"github.com/tutu-network/tutu/internal/infra/sqlite"
 )
 
@@ -18,14 +21,18 @@ import (
 // It manages content-addressed blobs in a local directory and tracks
 // metadata in SQLite.
 type Manager struct {
-	dir string // Root models directory (contains blobs/ and manifests/)
-	db  *sqlite.DB
+	dir       string // Root models directory (contains blobs/ and manifests/)
+	db        *sqlite.DB
+	urlOverride string // If set, use this base URL instead of HuggingFace (for testing)
 }
 
 // NewManager creates a Manager rooted at dir.
 func NewManager(dir string, db *sqlite.DB) *Manager {
 	return &Manager{dir: dir, db: db}
 }
+
+// SetTestURL sets a URL override for testing (downloads go to this URL instead of HuggingFace).
+func (m *Manager) SetTestURL(url string) { m.urlOverride = url }
 
 // Init ensures the directory structure exists.
 func (m *Manager) Init() error {
@@ -150,9 +157,9 @@ func (m *Manager) Show(name string) (*domain.ModelInfo, error) {
 	return info, nil
 }
 
-// Pull downloads a model from the registry. For Phase 0, this creates
-// a placeholder model locally for testing purposes. Real registry pull
-// will be implemented in Phase 1 when the network layer is ready.
+// Pull downloads a real GGUF model from HuggingFace.
+// It streams the file to disk with progress reporting and creates
+// the manifest + DB entry once download completes.
 func (m *Manager) Pull(name string, progress func(status string, pct float64)) error {
 	ref := ParseRef(name)
 
@@ -176,19 +183,154 @@ func (m *Manager) Pull(name string, progress func(status string, pct float64)) e
 		return nil
 	}
 
-	if progress != nil {
-		progress("creating placeholder model", 50)
+	// Look up in catalog
+	entry := catalog.Lookup(ref.String())
+	if entry == nil {
+		// Also try just the name without tag
+		entry = catalog.Lookup(ref.Name)
+	}
+	if entry == nil {
+		// Unknown model: if we have a URL override (test mode), create a synthetic entry
+		if m.urlOverride != "" {
+			entry = &catalog.ModelEntry{
+				Name:         ref.Name,
+				Family:       "unknown",
+				Parameters:   "unknown",
+				Quantization: "unknown",
+				Format:       "gguf",
+				SizeBytes:    0,
+				HFRepo:       "test/test",
+				HFFile:       ref.Name + ".gguf",
+				Tags:         []string{ref.String()},
+			}
+		} else {
+			return fmt.Errorf("model %q not found in catalog — available models: tinyllama, llama3, phi3, qwen2.5, gemma2, smollm2, mistral\nRun 'tutu list --available' to see all models", ref.String())
+		}
 	}
 
-	// Phase 0: Create a placeholder GGUF-like blob
-	blobContent := []byte(fmt.Sprintf("TUTU-PLACEHOLDER-MODEL:%s\n", ref.String()))
-	digest := "sha256:" + computeSHA256(blobContent)
+	url := entry.DownloadURL()
+	if m.urlOverride != "" {
+		url = m.urlOverride + "/" + entry.HFFile
+	}
+	if progress != nil {
+		progress(fmt.Sprintf("downloading %s (%s)", entry.Name, domain.HumanSize(entry.SizeBytes)), 0)
+	}
 
-	blobPath := m.BlobPath(digest)
+	// Download to a temp file first, then rename (atomic)
+	tmpPath := filepath.Join(m.dir, "blobs", ".download-"+ref.Name+".tmp")
+	if err := os.MkdirAll(filepath.Dir(tmpPath), 0o755); err != nil {
+		return err
+	}
+
+	// Support resume: check if partial download exists
+	var startByte int64
+	if stat, err := os.Stat(tmpPath); err == nil {
+		startByte = stat.Size()
+	}
+
+	// HTTP request with Range header for resume
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("User-Agent", "TuTu/0.1.0")
+	if startByte > 0 {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", startByte))
+		if progress != nil {
+			progress(fmt.Sprintf("resuming from %s", domain.HumanSize(startByte)), float64(startByte)/float64(entry.SizeBytes)*100)
+		}
+	}
+
+	client := &http.Client{
+		Timeout: 0, // No timeout for large downloads
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("download failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+		return fmt.Errorf("download failed: HTTP %d from %s", resp.StatusCode, url)
+	}
+
+	// Total size from Content-Length or catalog
+	totalSize := entry.SizeBytes
+	if resp.ContentLength > 0 {
+		totalSize = resp.ContentLength + startByte
+	}
+
+	// Open file for writing (append if resuming)
+	flags := os.O_CREATE | os.O_WRONLY
+	if startByte > 0 && resp.StatusCode == http.StatusPartialContent {
+		flags |= os.O_APPEND
+	} else {
+		flags |= os.O_TRUNC
+		startByte = 0
+	}
+	f, err := os.OpenFile(tmpPath, flags, 0o644)
+	if err != nil {
+		return fmt.Errorf("open file: %w", err)
+	}
+
+	// Stream download with progress
+	hasher := sha256.New()
+	buf := make([]byte, 256*1024) // 256KB buffer
+	downloaded := startByte
+
+	for {
+		n, readErr := resp.Body.Read(buf)
+		if n > 0 {
+			if _, err := f.Write(buf[:n]); err != nil {
+				f.Close()
+				return fmt.Errorf("write file: %w", err)
+			}
+			hasher.Write(buf[:n])
+			downloaded += int64(n)
+
+			if progress != nil && totalSize > 0 {
+				pct := float64(downloaded) / float64(totalSize) * 100
+				speed := domain.HumanSize(downloaded)
+				progress(fmt.Sprintf("downloading %s / %s", speed, domain.HumanSize(totalSize)), pct)
+			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			f.Close()
+			return fmt.Errorf("download interrupted: %w — run 'tutu pull %s' to resume", readErr, name)
+		}
+	}
+	f.Close()
+
+	// Compute SHA256 of the full file (for content addressing)
+	digest, err := hashFile(tmpPath)
+	if err != nil {
+		return fmt.Errorf("hash file: %w", err)
+	}
+	fullDigest := "sha256:" + digest
+
+	if progress != nil {
+		progress("verifying download", 99)
+	}
+
+	// Move to final content-addressed location
+	blobPath := m.BlobPath(fullDigest)
 	if err := os.MkdirAll(filepath.Dir(blobPath), 0o755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(blobPath, blobContent, 0o644); err != nil {
+	if err := os.Rename(tmpPath, blobPath); err != nil {
+		// Cross-device? Copy instead
+		if copyErr := copyFile(tmpPath, blobPath); copyErr != nil {
+			return fmt.Errorf("move blob: %w", copyErr)
+		}
+		os.Remove(tmpPath)
+	}
+
+	// Get actual file size
+	stat, err := os.Stat(blobPath)
+	if err != nil {
 		return err
 	}
 
@@ -199,8 +341,8 @@ func (m *Manager) Pull(name string, progress func(status string, pct float64)) e
 		Layers: []domain.Layer{
 			{
 				MediaType: "application/vnd.tutu.model",
-				Digest:    digest,
-				Size:      int64(len(blobContent)),
+				Digest:    fullDigest,
+				Size:      stat.Size(),
 			},
 		},
 	}
@@ -209,15 +351,17 @@ func (m *Manager) Pull(name string, progress func(status string, pct float64)) e
 		return err
 	}
 
-	// Store in DB
+	// Store in DB with real metadata
 	now := time.Now()
 	info := domain.ModelInfo{
 		Name:         ref.String(),
-		SizeBytes:    int64(len(blobContent)),
-		Digest:       digest,
+		SizeBytes:    stat.Size(),
+		Digest:       fullDigest,
 		PulledAt:     now,
-		Quantization: "Q4_K_M",
-		Format:       "gguf",
+		Format:       entry.Format,
+		Family:       entry.Family,
+		Parameters:   entry.Parameters,
+		Quantization: entry.Quantization,
 	}
 	if err := m.db.UpsertModel(info); err != nil {
 		return err
@@ -227,6 +371,39 @@ func (m *Manager) Pull(name string, progress func(status string, pct float64)) e
 		progress("done", 100)
 	}
 	return nil
+}
+
+// hashFile computes SHA256 of a file on disk.
+func hashFile(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// copyFile copies src to dst (for cross-device moves).
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, in)
+	return err
 }
 
 // CreateFromTuTufile creates a model from a TuTufile.

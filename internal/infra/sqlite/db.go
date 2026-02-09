@@ -67,13 +67,16 @@ func (d *DB) migrate() error {
 	migrations := []string{
 		// Phase 0: Base schema
 		`CREATE TABLE IF NOT EXISTS models (
-			name       TEXT PRIMARY KEY,
-			digest     TEXT NOT NULL,
-			size_bytes INTEGER NOT NULL,
-			format     TEXT NOT NULL DEFAULT 'gguf',
-			pulled_at  INTEGER NOT NULL,
-			last_used  INTEGER,
-			pinned     BOOLEAN DEFAULT 0
+			name         TEXT PRIMARY KEY,
+			digest       TEXT NOT NULL,
+			size_bytes   INTEGER NOT NULL,
+			format       TEXT NOT NULL DEFAULT 'gguf',
+			family       TEXT NOT NULL DEFAULT '',
+			parameters   TEXT NOT NULL DEFAULT '',
+			quantization TEXT NOT NULL DEFAULT '',
+			pulled_at    INTEGER NOT NULL,
+			last_used    INTEGER,
+			pinned       BOOLEAN DEFAULT 0
 		)`,
 		`CREATE TABLE IF NOT EXISTS node_info (
 			key   TEXT PRIMARY KEY,
@@ -95,16 +98,20 @@ func (d *DB) migrate() error {
 // UpsertModel inserts or updates a model record.
 func (d *DB) UpsertModel(info domain.ModelInfo) error {
 	_, err := d.db.Exec(
-		`INSERT INTO models (name, digest, size_bytes, format, pulled_at, last_used, pinned)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO models (name, digest, size_bytes, format, family, parameters, quantization, pulled_at, last_used, pinned)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(name) DO UPDATE SET
 			digest=excluded.digest,
 			size_bytes=excluded.size_bytes,
 			format=excluded.format,
+			family=excluded.family,
+			parameters=excluded.parameters,
+			quantization=excluded.quantization,
 			pulled_at=excluded.pulled_at,
 			last_used=excluded.last_used,
 			pinned=excluded.pinned`,
 		info.Name, info.Digest, info.SizeBytes, info.Format,
+		info.Family, info.Parameters, info.Quantization,
 		info.PulledAt.Unix(), nullableUnix(info.LastUsed), info.Pinned,
 	)
 	return err
@@ -113,7 +120,7 @@ func (d *DB) UpsertModel(info domain.ModelInfo) error {
 // GetModel retrieves a single model by name.
 func (d *DB) GetModel(name string) (*domain.ModelInfo, error) {
 	row := d.db.QueryRow(
-		`SELECT name, digest, size_bytes, format, pulled_at, last_used, pinned
+		`SELECT name, digest, size_bytes, format, family, parameters, quantization, pulled_at, last_used, pinned
 		 FROM models WHERE name = ?`, name,
 	)
 	return scanModel(row)
@@ -122,7 +129,7 @@ func (d *DB) GetModel(name string) (*domain.ModelInfo, error) {
 // ListModels returns all installed models ordered by last_used descending.
 func (d *DB) ListModels() ([]domain.ModelInfo, error) {
 	rows, err := d.db.Query(
-		`SELECT name, digest, size_bytes, format, pulled_at, last_used, pinned
+		`SELECT name, digest, size_bytes, format, family, parameters, quantization, pulled_at, last_used, pinned
 		 FROM models ORDER BY COALESCE(last_used, pulled_at) DESC`,
 	)
 	if err != nil {
@@ -197,7 +204,9 @@ func scanModel(s scanner) (*domain.ModelInfo, error) {
 	var pulledAt int64
 	var lastUsed sql.NullInt64
 
-	err := s.Scan(&m.Name, &m.Digest, &m.SizeBytes, &m.Format, &pulledAt, &lastUsed, &m.Pinned)
+	err := s.Scan(&m.Name, &m.Digest, &m.SizeBytes, &m.Format,
+		&m.Family, &m.Parameters, &m.Quantization,
+		&pulledAt, &lastUsed, &m.Pinned)
 	if err == sql.ErrNoRows {
 		return nil, nil // Not found, no error
 	}

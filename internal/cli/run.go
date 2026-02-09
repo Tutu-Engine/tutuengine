@@ -43,13 +43,13 @@ func runRun(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if !exists {
-		fmt.Printf("Pulling %s...\n", modelName)
-		if err := d.Models.Pull(modelName, func(status string, pct float64) {
-			fmt.Printf("\r%s %.0f%%", status, pct)
-		}); err != nil {
+		fmt.Fprintf(os.Stderr, "pulling %s...\n", modelName)
+		pb := newProgressBar()
+		if err := d.Models.Pull(modelName, pb.callback); err != nil {
+			fmt.Fprintln(os.Stderr)
 			return fmt.Errorf("pull model: %w", err)
 		}
-		fmt.Println()
+		fmt.Fprintln(os.Stderr)
 	}
 
 	// Acquire model

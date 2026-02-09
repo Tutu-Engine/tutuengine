@@ -26,11 +26,18 @@ func newTestServer(t *testing.T) (*Server, func()) {
 		t.Fatalf("Open db: %v", err)
 	}
 
+	// Local HTTP server serving fake GGUF content (tests never hit network)
+	fakeSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("GGUF-FAKE-" + r.URL.Path))
+	}))
+
 	// Setup models
 	modelsDir := filepath.Join(dir, "models")
 	mgr := registry.NewManager(modelsDir, db)
+	mgr.SetTestURL(fakeSrv.URL)
 
-	// Setup engine pool
+	// Setup engine pool (mock backend for unit tests)
 	backend := engine.NewMockBackend()
 	pool := engine.NewPool(backend, 1024*1024*1024, mgr.Resolve)
 
@@ -39,6 +46,7 @@ func newTestServer(t *testing.T) (*Server, func()) {
 	cleanup := func() {
 		_ = pool.UnloadAll()
 		_ = db.Close()
+		fakeSrv.Close()
 	}
 
 	return srv, cleanup
@@ -49,6 +57,28 @@ func setupModel(t *testing.T, mgr *registry.Manager, name string) {
 	if err := mgr.Pull(name, nil); err != nil {
 		t.Fatalf("Pull(%s): %v", name, err)
 	}
+}
+
+// newTestMgr creates a Manager with a local HTTP server (no network calls).
+func newTestMgr(t *testing.T) (*registry.Manager, *sqlite.DB) {
+	t.Helper()
+	dir := t.TempDir()
+	dbDir := filepath.Join(dir, "db")
+	db, err := sqlite.Open(dbDir)
+	if err != nil {
+		t.Fatalf("Open db: %v", err)
+	}
+
+	fakeSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("GGUF-FAKE-" + r.URL.Path))
+	}))
+	t.Cleanup(fakeSrv.Close)
+
+	modelsDir := filepath.Join(dir, "models")
+	mgr := registry.NewManager(modelsDir, db)
+	mgr.SetTestURL(fakeSrv.URL)
+	return mgr, db
 }
 
 // ─── Health Check ───────────────────────────────────────────────────────────
@@ -110,16 +140,8 @@ func TestAPI_ListModels_Empty(t *testing.T) {
 }
 
 func TestAPI_ListModels_WithModels(t *testing.T) {
-	dir := t.TempDir()
-	dbDir := filepath.Join(dir, "db")
-	db, err := sqlite.Open(dbDir)
-	if err != nil {
-		t.Fatalf("Open db: %v", err)
-	}
+	mgr, db := newTestMgr(t)
 	defer db.Close()
-
-	modelsDir := filepath.Join(dir, "models")
-	mgr := registry.NewManager(modelsDir, db)
 	setupModel(t, mgr, "llama3")
 	setupModel(t, mgr, "mistral")
 
@@ -149,16 +171,8 @@ func TestAPI_ListModels_WithModels(t *testing.T) {
 // ─── OpenAI /v1/chat/completions ────────────────────────────────────────────
 
 func TestAPI_ChatCompletions_NonStreaming(t *testing.T) {
-	dir := t.TempDir()
-	dbDir := filepath.Join(dir, "db")
-	db, err := sqlite.Open(dbDir)
-	if err != nil {
-		t.Fatalf("Open db: %v", err)
-	}
+	mgr, db := newTestMgr(t)
 	defer db.Close()
-
-	modelsDir := filepath.Join(dir, "models")
-	mgr := registry.NewManager(modelsDir, db)
 	setupModel(t, mgr, "test-model")
 
 	backend := engine.NewMockBackend()
@@ -213,16 +227,8 @@ func TestAPI_ChatCompletions_MissingModel(t *testing.T) {
 }
 
 func TestAPI_ChatCompletions_Streaming(t *testing.T) {
-	dir := t.TempDir()
-	dbDir := filepath.Join(dir, "db")
-	db, err := sqlite.Open(dbDir)
-	if err != nil {
-		t.Fatalf("Open db: %v", err)
-	}
+	mgr, db := newTestMgr(t)
 	defer db.Close()
-
-	modelsDir := filepath.Join(dir, "models")
-	mgr := registry.NewManager(modelsDir, db)
 	setupModel(t, mgr, "test-model")
 
 	backend := engine.NewMockBackend()
@@ -260,16 +266,8 @@ func TestAPI_ChatCompletions_Streaming(t *testing.T) {
 // ─── OpenAI /v1/embeddings ──────────────────────────────────────────────────
 
 func TestAPI_Embeddings(t *testing.T) {
-	dir := t.TempDir()
-	dbDir := filepath.Join(dir, "db")
-	db, err := sqlite.Open(dbDir)
-	if err != nil {
-		t.Fatalf("Open db: %v", err)
-	}
+	mgr, db := newTestMgr(t)
 	defer db.Close()
-
-	modelsDir := filepath.Join(dir, "models")
-	mgr := registry.NewManager(modelsDir, db)
 	setupModel(t, mgr, "test-model")
 
 	backend := engine.NewMockBackend()

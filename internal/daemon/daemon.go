@@ -51,8 +51,17 @@ func NewWithConfig(cfg Config) (*Daemon, error) {
 	}
 	mgr := registry.NewManager(modelsDir, db)
 
-	// Initialize inference engine (mock for now, CGO in production)
-	backend := engine.NewMockBackend()
+	// Initialize inference engine
+	// Try real llama-server subprocess backend first, fall back to mock
+	var backend engine.InferenceBackend
+	realBackend, err := engine.NewSubprocessBackend(tutuHome())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "WARNING: llama-server not found, using mock backend (no real AI inference)\n")
+		fmt.Fprintf(os.Stderr, "  Install llama-server for real model inference.\n")
+		backend = engine.NewMockBackend()
+	} else {
+		backend = realBackend
+	}
 	pool := engine.NewPool(backend, parseStorageSize(cfg.Models.MaxStorage), mgr.Resolve)
 
 	// Initialize API server
