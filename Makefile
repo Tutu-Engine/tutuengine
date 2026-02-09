@@ -10,9 +10,9 @@ LDFLAGS := -ldflags "-X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main
 build:
 	go build $(LDFLAGS) -o bin/tutu.exe ./cmd/tutu
 
-# Run all tests with race detector
+# Run all tests (no -race: requires CGO which modernc.org/sqlite doesn't use)
 test:
-	go test -race -count=1 -cover ./...
+	go test -count=1 -cover ./...
 
 # Run linter (requires golangci-lint)
 lint:

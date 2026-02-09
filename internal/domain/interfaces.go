@@ -30,12 +30,27 @@ type ModelStore interface {
 	TouchModel(name string) error // Update last_used
 }
 
-// ModelManager abstracts pull/push/resolve operations.
+// ModelManager abstracts pull/resolve/show operations on the local model store.
+// Implemented by infra/registry.Manager.
 type ModelManager interface {
-	Pull(ctx context.Context, name string, progress func(float64)) error
-	Resolve(name string) (string, error) // name → local file path
-	HasLocal(name string) bool
+	// Pull downloads a model by name with progress reporting.
+	Pull(name string, progress func(status string, pct float64)) error
+
+	// Resolve returns the local file path for a model's weights.
+	Resolve(name string) (string, error)
+
+	// HasLocal checks whether a model exists locally.
+	HasLocal(ref ModelRef) (bool, error)
+
+	// List returns all locally installed models.
 	List() ([]ModelInfo, error)
+
+	// Remove deletes a model from local storage.
 	Remove(name string) error
-	Show(name string) (*Manifest, error)
+
+	// Show returns detailed info about a model.
+	Show(name string) (*ModelInfo, error)
+
+	// CreateFromTuTufile creates a custom model from a TuTufile definition.
+	CreateFromTuTufile(name string, tf TuTufile) error
 }
