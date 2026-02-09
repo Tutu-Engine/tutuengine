@@ -83,6 +83,48 @@ func (d *DB) migrate() error {
 			value TEXT NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_models_used ON models(last_used)`,
+
+		// Phase 1: Credit ledger (double-entry bookkeeping — Architecture Part X)
+		`CREATE TABLE IF NOT EXISTS credit_ledger (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			timestamp   INTEGER NOT NULL,
+			type        TEXT NOT NULL,
+			entry_type  TEXT NOT NULL,
+			account     TEXT NOT NULL,
+			amount      INTEGER NOT NULL,
+			task_id     TEXT,
+			description TEXT,
+			balance     INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_credit_ts ON credit_ledger(timestamp)`,
+		`CREATE INDEX IF NOT EXISTS idx_credit_account ON credit_ledger(account)`,
+
+		// Phase 1: Task tracking
+		`CREATE TABLE IF NOT EXISTS tasks (
+			id           TEXT PRIMARY KEY,
+			type         TEXT NOT NULL,
+			status       TEXT NOT NULL,
+			priority     INTEGER NOT NULL DEFAULT 0,
+			created_at   INTEGER NOT NULL,
+			started_at   INTEGER,
+			completed_at INTEGER,
+			credits      INTEGER,
+			result_hash  TEXT,
+			error        TEXT
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)`,
+		`CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_at)`,
+
+		// Phase 1: Known peers (SWIM gossip state)
+		`CREATE TABLE IF NOT EXISTS peers (
+			node_id    TEXT PRIMARY KEY,
+			region     TEXT NOT NULL,
+			endpoint   TEXT,
+			last_seen  INTEGER NOT NULL,
+			reputation REAL DEFAULT 0.5,
+			state      TEXT DEFAULT 'ALIVE'
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_peers_seen ON peers(last_seen)`,
 	}
 
 	for _, m := range migrations {

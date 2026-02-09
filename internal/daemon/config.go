@@ -10,13 +10,16 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// Config holds all daemon configuration. Phase 0 subset.
+// Config holds all daemon configuration.
 type Config struct {
 	Node      NodeConfig      `toml:"node"`
 	API       APIConfig       `toml:"api"`
 	Models    ModelsConfig    `toml:"models"`
 	Inference InferenceConfig `toml:"inference"`
 	Logging   LoggingConfig   `toml:"logging"`
+	Network   NetworkConfig   `toml:"network"`
+	Resources ResourcesConfig `toml:"resources"`
+	Security  SecurityConfig  `toml:"security"`
 }
 
 // NodeConfig identifies this node.
@@ -57,7 +60,30 @@ type LoggingConfig struct {
 	MaxFiles  int    `toml:"max_files"`
 }
 
-// DefaultConfig returns a sensible default configuration for Phase 0.
+// NetworkConfig controls distributed network participation (Phase 1).
+type NetworkConfig struct {
+	Enabled           bool   `toml:"enabled"`
+	CloudCore         string `toml:"cloud_core"`
+	HeartbeatInterval string `toml:"heartbeat_interval"`
+}
+
+// ResourcesConfig controls the resource governor (Phase 1).
+type ResourcesConfig struct {
+	MaxCPUPercent   int  `toml:"max_cpu_percent"`
+	MaxMemoryPercent int `toml:"max_memory_percent"`
+	ThermalThrottle int  `toml:"thermal_throttle"`
+	ThermalShutdown int  `toml:"thermal_shutdown"`
+	IdleDetection   bool `toml:"idle_detection"`
+}
+
+// SecurityConfig controls security features (Phase 1).
+type SecurityConfig struct {
+	Sandbox        string `toml:"sandbox"`
+	RequireSigning bool   `toml:"require_signing"`
+	TLS            bool   `toml:"tls"`
+}
+
+// DefaultConfig returns a sensible default configuration.
 func DefaultConfig() Config {
 	homeDir := tutuHome()
 	return Config{
@@ -87,6 +113,23 @@ func DefaultConfig() Config {
 			File:      filepath.Join(homeDir, "tutu.log"),
 			MaxSizeMB: 50,
 			MaxFiles:  5,
+		},
+		Network: NetworkConfig{
+			Enabled:           false, // Off by default — opt-in
+			CloudCore:         "https://api.tutu.network",
+			HeartbeatInterval: "10s",
+		},
+		Resources: ResourcesConfig{
+			MaxCPUPercent:    80,
+			MaxMemoryPercent: 70,
+			ThermalThrottle:  80,
+			ThermalShutdown:  95,
+			IdleDetection:    true,
+		},
+		Security: SecurityConfig{
+			Sandbox:        "process", // "gvisor" when available
+			RequireSigning: true,
+			TLS:            true,
 		},
 	}
 }
