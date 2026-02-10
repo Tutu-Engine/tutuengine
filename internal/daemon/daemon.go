@@ -13,10 +13,12 @@ import (
 
 	"github.com/tutu-network/tutu/internal/api"
 	"github.com/tutu-network/tutu/internal/app/credit"
+	"github.com/tutu-network/tutu/internal/app/engagement"
 	"github.com/tutu-network/tutu/internal/app/executor"
 	"github.com/tutu-network/tutu/internal/health"
 	"github.com/tutu-network/tutu/internal/infra/engine"
 	"github.com/tutu-network/tutu/internal/infra/gossip"
+	"github.com/tutu-network/tutu/internal/mcp"
 	_ "github.com/tutu-network/tutu/internal/infra/metrics" // Register Prometheus metrics
 	"github.com/tutu-network/tutu/internal/infra/network"
 	"github.com/tutu-network/tutu/internal/infra/registry"
@@ -43,6 +45,16 @@ type Daemon struct {
 	Health   *health.Checker
 	Credit   *credit.Service
 	Keypair  *security.Keypair
+
+	// Phase 2 components
+	Streak       *engagement.StreakService
+	Level        *engagement.LevelService
+	Achievement  *engagement.AchievementService
+	Quest        *engagement.QuestService
+	Notification *engagement.NotificationService
+	MCPGateway   *mcp.Gateway
+	MCPTransport *mcp.Transport
+	MCPMeter     *mcp.Meter
 }
 
 // New creates and initializes a Daemon with all services wired.
@@ -161,6 +173,24 @@ func NewWithConfig(cfg Config) (*Daemon, error) {
 
 	// Health checker
 	d.Health = health.NewChecker(db, modelsDir)
+
+	// ─── Phase 2 components ────────────────────────────────────────────
+
+	// Engagement engine
+	d.Streak = engagement.NewStreakService(db)
+	d.Level = engagement.NewLevelService(db)
+	d.Achievement = engagement.NewAchievementService(db)
+	d.Quest = engagement.NewQuestService(db)
+	d.Notification = engagement.NewNotificationService(db)
+
+	// MCP Gateway
+	slaEngine := mcp.NewSLAEngine()
+	d.MCPMeter = mcp.NewMeter(slaEngine)
+	d.MCPGateway = mcp.NewGateway(slaEngine, d.MCPMeter)
+	d.MCPTransport = mcp.NewTransport(d.MCPGateway)
+
+	// Mount MCP endpoint on the API server
+	srv.SetMCPHandler(d.MCPTransport)
 
 	return d, nil
 }

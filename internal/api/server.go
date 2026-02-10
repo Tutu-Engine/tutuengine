@@ -20,6 +20,7 @@ type Server struct {
 	pool           *engine.Pool
 	models         *registry.Manager
 	metricsEnabled bool
+	mcpHandler     http.Handler // Phase 2: MCP transport handler (nil if not set)
 }
 
 // NewServer creates a new API server.
@@ -29,6 +30,9 @@ func NewServer(pool *engine.Pool, models *registry.Manager) *Server {
 
 // EnableMetrics enables the /metrics Prometheus endpoint.
 func (s *Server) EnableMetrics() { s.metricsEnabled = true }
+
+// SetMCPHandler sets the MCP Streamable HTTP transport handler.
+func (s *Server) SetMCPHandler(h http.Handler) { s.mcpHandler = h }
 
 // Handler returns the chi router with all routes mounted.
 func (s *Server) Handler() http.Handler {
@@ -74,6 +78,11 @@ func (s *Server) Handler() http.Handler {
 	// Prometheus metrics endpoint (Phase 1 — observability)
 	if s.metricsEnabled {
 		r.Handle("/metrics", promhttp.Handler())
+	}
+
+	// MCP Streamable HTTP endpoint (Phase 2 — enterprise gateway)
+	if s.mcpHandler != nil {
+		r.Handle("/mcp", s.mcpHandler)
 	}
 
 	return r

@@ -96,9 +96,14 @@ func TestFabric_Stop(t *testing.T) {
 	defer cancel()
 
 	f.Start(ctx)
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond) // Let registration goroutine complete
+
+	if !f.IsOnline() {
+		t.Fatal("should be online before Stop()")
+	}
 
 	f.Stop()
+	// Stop sets stopped=true, preventing heartbeat from re-registering
 	if f.IsOnline() {
 		t.Error("should be offline after Stop()")
 	}

@@ -60,6 +60,7 @@ type Fabric struct {
 	governor    *resource.Governor
 	swim        *gossip.SWIM
 	isOnline    bool
+	stopped     bool // Prevents re-registration after Stop()
 	startedAt   time.Time
 	activeTasks int
 
@@ -132,6 +133,7 @@ func (f *Fabric) Start(ctx context.Context) error {
 // Stop gracefully disconnects the node.
 func (f *Fabric) Stop() {
 	f.mu.Lock()
+	f.stopped = true
 	f.isOnline = false
 	f.mu.Unlock()
 
@@ -183,7 +185,9 @@ func (f *Fabric) register(ctx context.Context) error {
 	log.Printf("[network] registration stub — cloud core at %s", f.config.CloudCoreEndpoint)
 
 	f.mu.Lock()
-	f.isOnline = true
+	if !f.stopped {
+		f.isOnline = true
+	}
 	f.mu.Unlock()
 
 	return nil
@@ -206,6 +210,13 @@ func (f *Fabric) heartbeatLoop(ctx context.Context) {
 
 // sendHeartbeat sends a single heartbeat.
 func (f *Fabric) sendHeartbeat(ctx context.Context) {
+	f.mu.RLock()
+	stopped := f.stopped
+	f.mu.RUnlock()
+	if stopped {
+		return
+	}
+
 	if !f.IsOnline() {
 		// Try to reconnect
 		if err := f.register(ctx); err != nil {

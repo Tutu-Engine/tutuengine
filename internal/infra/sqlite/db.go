@@ -125,6 +125,46 @@ func (d *DB) migrate() error {
 			state      TEXT DEFAULT 'ALIVE'
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_peers_seen ON peers(last_seen)`,
+
+		// ─── Phase 2: Engagement Engine (Architecture Part XIII) ───────
+
+		// Key-value store for engagement state (level, xp, streak data)
+		`CREATE TABLE IF NOT EXISTS engagement (
+			key   TEXT PRIMARY KEY,
+			value TEXT NOT NULL
+		)`,
+
+		// Unlocked achievements
+		`CREATE TABLE IF NOT EXISTS achievements (
+			id          TEXT PRIMARY KEY,
+			unlocked_at INTEGER NOT NULL,
+			notified    BOOLEAN DEFAULT 0
+		)`,
+
+		// Weekly quests with progress tracking
+		`CREATE TABLE IF NOT EXISTS quests (
+			id             TEXT PRIMARY KEY,
+			type           TEXT NOT NULL,
+			description    TEXT NOT NULL,
+			target         INTEGER NOT NULL,
+			progress       INTEGER DEFAULT 0,
+			reward_xp      INTEGER NOT NULL,
+			reward_credits INTEGER NOT NULL,
+			expires_at     INTEGER NOT NULL,
+			completed      BOOLEAN DEFAULT 0
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_quests_expires ON quests(expires_at)`,
+
+		// Notification log (policy: max 1/day, quiet hours)
+		`CREATE TABLE IF NOT EXISTS notifications (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			type       TEXT NOT NULL,
+			title      TEXT NOT NULL,
+			body       TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			shown      BOOLEAN DEFAULT 0
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_notif_created ON notifications(created_at)`,
 	}
 
 	for _, m := range migrations {
