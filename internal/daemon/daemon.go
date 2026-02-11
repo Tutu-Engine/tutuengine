@@ -17,9 +17,12 @@ import (
 	"github.com/tutu-network/tutu/internal/app/executor"
 	"github.com/tutu-network/tutu/internal/domain"
 	"github.com/tutu-network/tutu/internal/health"
+	"github.com/tutu-network/tutu/internal/infra/anomaly"
 	"github.com/tutu-network/tutu/internal/infra/engine"
+	"github.com/tutu-network/tutu/internal/infra/federation"
 	"github.com/tutu-network/tutu/internal/infra/finetune"
 	"github.com/tutu-network/tutu/internal/infra/gossip"
+	"github.com/tutu-network/tutu/internal/infra/governance"
 	"github.com/tutu-network/tutu/internal/infra/healing"
 	"github.com/tutu-network/tutu/internal/infra/marketplace"
 	_ "github.com/tutu-network/tutu/internal/infra/metrics" // Register Prometheus metrics
@@ -28,6 +31,7 @@ import (
 	"github.com/tutu-network/tutu/internal/infra/passive"
 	"github.com/tutu-network/tutu/internal/infra/region"
 	"github.com/tutu-network/tutu/internal/infra/registry"
+	"github.com/tutu-network/tutu/internal/infra/reputation"
 	"github.com/tutu-network/tutu/internal/infra/resource"
 	"github.com/tutu-network/tutu/internal/infra/scheduler"
 	"github.com/tutu-network/tutu/internal/infra/sqlite"
@@ -77,6 +81,12 @@ type Daemon struct {
 	// Phase 4 components — planet scale, marketplace, fine-tuning
 	FineTuneCoordinator *finetune.Coordinator
 	Marketplace         *marketplace.Store
+
+	// Phase 5 components — federation, governance, reputation, anomaly
+	Federation *federation.Registry
+	Governance *governance.Engine
+	Reputation *reputation.Tracker
+	Anomaly    *anomaly.Detector
 }
 
 // New creates and initializes a Daemon with all services wired.
@@ -261,6 +271,20 @@ func NewWithConfig(cfg Config) (*Daemon, error) {
 
 	// Model marketplace
 	d.Marketplace = marketplace.NewStore(marketplace.DefaultStoreConfig())
+
+	// ─── Phase 5 components ────────────────────────────────────────────
+
+	// Federation registry — private sub-networks for organizations
+	d.Federation = federation.NewRegistry(federation.DefaultRegistryConfig())
+
+	// Governance engine — credit-weighted voting on network parameters
+	d.Governance = governance.NewEngine(governance.DefaultEngineConfig())
+
+	// Reputation tracker — EMA-based trust scoring for nodes
+	d.Reputation = reputation.NewTracker(reputation.DefaultTrackerConfig())
+
+	// Anomaly detector — behavioral profiling + statistical outlier detection
+	d.Anomaly = anomaly.NewDetector(anomaly.DefaultDetectorConfig())
 
 	return d, nil
 }

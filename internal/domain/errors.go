@@ -66,4 +66,28 @@ var (
 	ErrManifestInvalid    = errors.New("manifest signature invalid")
 	ErrNoPeersAvailable   = errors.New("no peers have required chunk")
 	ErrTransferCancelled  = errors.New("transfer was cancelled")
+
+	// Phase 5: Federation errors
+	ErrFederationNotFound  = errors.New("federation not found")
+	ErrFederationFull      = errors.New("federation has reached maximum member count")
+	ErrAlreadyFederated    = errors.New("node already belongs to a federation")
+	ErrNotFederated        = errors.New("node is not a member of this federation")
+	ErrAdminCannotLeave    = errors.New("admin cannot leave — transfer admin first or dissolve")
+	ErrFederationSuspended = errors.New("federation is suspended — no new members allowed")
+
+	// Phase 5: Governance errors
+	ErrProposalNotFound             = errors.New("governance proposal not found")
+	ErrVotingClosed                 = errors.New("voting period has ended")
+	ErrInsufficientCreditsToPropose = errors.New("insufficient credits to submit a proposal")
+	ErrQuorumNotReached             = errors.New("quorum not reached — proposal cannot pass")
+	ErrAlreadyVoted                 = errors.New("already cast a vote on this proposal")
+	ErrTooManyActiveProposals       = errors.New("maximum active proposals reached")
+
+	// Phase 5: Reputation errors
+	ErrNodeNotRegistered = errors.New("node not registered in reputation system")
+	ErrReputationTooLow  = errors.New("reputation score below required threshold")
+
+	// Phase 5: Anomaly detection errors
+	ErrNodeAnomalous  = errors.New("node exhibits anomalous behavior")
+	ErrThreatDetected = errors.New("node flagged in threat intelligence feed")
 )
