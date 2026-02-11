@@ -28,4 +28,20 @@ var (
 
 	// Pool errors
 	ErrPoolExhausted    = errors.New("model pool memory exhausted — all models in use")
+
+	// Phase 3: Scheduler back-pressure errors
+	ErrBackPressureSoft   = errors.New("back-pressure: soft limit — spot tasks rejected")
+	ErrBackPressureMedium = errors.New("back-pressure: medium limit — only realtime accepted")
+	ErrBackPressureHard   = errors.New("back-pressure: hard limit — all tasks rejected")
+
+	// Phase 3: Circuit breaker errors
+	ErrCircuitOpen     = errors.New("circuit breaker is open — service unavailable")
+	ErrCircuitHalfOpen = errors.New("circuit breaker is half-open — limited traffic")
+
+	// Phase 3: Quarantine errors
+	ErrNodeQuarantined = errors.New("node is quarantined — cannot accept tasks")
+
+	// Phase 3: NAT traversal errors
+	ErrNATTraversalFailed = errors.New("NAT traversal failed — no direct connection possible")
+	ErrTURNUnavailable    = errors.New("TURN relay server unavailable")
 )
