@@ -90,4 +90,26 @@ var (
 	// Phase 5: Anomaly detection errors
 	ErrNodeAnomalous  = errors.New("node exhibits anomalous behavior")
 	ErrThreatDetected = errors.New("node flagged in threat intelligence feed")
+
+	// Phase 6: ML scheduler errors
+	ErrMLSchedulerNoCandidate = errors.New("ML scheduler: no candidate nodes available")
+	ErrMLSchedulerColdStart   = errors.New("ML scheduler: insufficient observations for reliable selection")
+
+	// Phase 6: Predictive scaling errors
+	ErrScalingCooldown     = errors.New("scaling decision blocked by cooldown period")
+	ErrCapacityAtMax       = errors.New("node capacity already at maximum")
+	ErrCapacityAtMin       = errors.New("node capacity already at minimum")
+	ErrForecastInsufficient = errors.New("insufficient observations for forecast")
+
+	// Phase 6: Self-healing errors
+	ErrIncidentNotFound      = errors.New("healing incident not found")
+	ErrIncidentAlreadyActive = errors.New("node already has an active incident")
+	ErrNoRunbook             = errors.New("no runbook available for this failure type")
+	ErrMaxIncidents          = errors.New("maximum active incidents reached")
+	ErrRemediationExhausted  = errors.New("all remediation attempts exhausted — escalated")
+
+	// Phase 6: Network intelligence errors
+	ErrModelNotTracked      = errors.New("model not tracked by intelligence optimizer")
+	ErrNoPlacementData      = errors.New("insufficient data for placement optimization")
+	ErrRetirementProtected  = errors.New("model is pinned and cannot be retired")
 )

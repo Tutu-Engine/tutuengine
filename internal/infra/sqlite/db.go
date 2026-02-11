@@ -213,6 +213,9 @@ func (d *DB) migrate() error {
 	// Append Phase 5 migrations — federation, governance, reputation, anomaly
 	migrations = append(migrations, Phase5Migrations()...)
 
+	// Append Phase 6 migrations — ML scheduler, predictive scaling, self-healing, intelligence
+	migrations = append(migrations, Phase6Migrations()...)
+
 	for _, m := range migrations {
 		if _, err := d.db.Exec(m); err != nil {
 			return fmt.Errorf("migration failed: %w\nSQL: %s", err, m)

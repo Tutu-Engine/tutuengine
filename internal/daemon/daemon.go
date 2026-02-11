@@ -18,14 +18,17 @@ import (
 	"github.com/tutu-network/tutu/internal/domain"
 	"github.com/tutu-network/tutu/internal/health"
 	"github.com/tutu-network/tutu/internal/infra/anomaly"
+	"github.com/tutu-network/tutu/internal/infra/autoscale"
 	"github.com/tutu-network/tutu/internal/infra/engine"
 	"github.com/tutu-network/tutu/internal/infra/federation"
 	"github.com/tutu-network/tutu/internal/infra/finetune"
 	"github.com/tutu-network/tutu/internal/infra/gossip"
 	"github.com/tutu-network/tutu/internal/infra/governance"
 	"github.com/tutu-network/tutu/internal/infra/healing"
+	"github.com/tutu-network/tutu/internal/infra/intelligence"
 	"github.com/tutu-network/tutu/internal/infra/marketplace"
 	_ "github.com/tutu-network/tutu/internal/infra/metrics" // Register Prometheus metrics
+	"github.com/tutu-network/tutu/internal/infra/mlscheduler"
 	"github.com/tutu-network/tutu/internal/infra/network"
 	"github.com/tutu-network/tutu/internal/infra/observability"
 	"github.com/tutu-network/tutu/internal/infra/passive"
@@ -34,6 +37,7 @@ import (
 	"github.com/tutu-network/tutu/internal/infra/reputation"
 	"github.com/tutu-network/tutu/internal/infra/resource"
 	"github.com/tutu-network/tutu/internal/infra/scheduler"
+	"github.com/tutu-network/tutu/internal/infra/selfheal"
 	"github.com/tutu-network/tutu/internal/infra/sqlite"
 	"github.com/tutu-network/tutu/internal/mcp"
 	"github.com/tutu-network/tutu/internal/security"
@@ -87,6 +91,12 @@ type Daemon struct {
 	Governance *governance.Engine
 	Reputation *reputation.Tracker
 	Anomaly    *anomaly.Detector
+
+	// Phase 6 components — singularity: self-organizing network
+	MLScheduler *mlscheduler.Scheduler
+	AutoScaler  *autoscale.Scaler
+	SelfHeal    *selfheal.Mesh
+	Intelligence *intelligence.Optimizer
 }
 
 // New creates and initializes a Daemon with all services wired.
@@ -285,6 +295,20 @@ func NewWithConfig(cfg Config) (*Daemon, error) {
 
 	// Anomaly detector — behavioral profiling + statistical outlier detection
 	d.Anomaly = anomaly.NewDetector(anomaly.DefaultDetectorConfig())
+
+	// ─── Phase 6 components ────────────────────────────────────────────
+
+	// ML-driven scheduler — UCB1 multi-armed bandit for optimal node assignment
+	d.MLScheduler = mlscheduler.NewScheduler(mlscheduler.DefaultConfig())
+
+	// Predictive auto-scaler — exponential smoothing + seasonal forecasting
+	d.AutoScaler = autoscale.NewScaler(autoscale.DefaultConfig())
+
+	// Self-healing mesh — autonomous incident response with runbooks
+	d.SelfHeal = selfheal.NewMesh(selfheal.DefaultConfig())
+
+	// Network intelligence — model placement optimization + retirement
+	d.Intelligence = intelligence.NewOptimizer(intelligence.DefaultConfig())
 
 	return d, nil
 }
