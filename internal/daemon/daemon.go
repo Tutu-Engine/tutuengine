@@ -19,9 +19,11 @@ import (
 	"github.com/tutu-network/tutu/internal/health"
 	"github.com/tutu-network/tutu/internal/infra/anomaly"
 	"github.com/tutu-network/tutu/internal/infra/autoscale"
+	"github.com/tutu-network/tutu/internal/infra/democracy"
 	"github.com/tutu-network/tutu/internal/infra/engine"
 	"github.com/tutu-network/tutu/internal/infra/federation"
 	"github.com/tutu-network/tutu/internal/infra/finetune"
+	"github.com/tutu-network/tutu/internal/infra/flywheel"
 	"github.com/tutu-network/tutu/internal/infra/gossip"
 	"github.com/tutu-network/tutu/internal/infra/governance"
 	"github.com/tutu-network/tutu/internal/infra/healing"
@@ -32,6 +34,7 @@ import (
 	"github.com/tutu-network/tutu/internal/infra/network"
 	"github.com/tutu-network/tutu/internal/infra/observability"
 	"github.com/tutu-network/tutu/internal/infra/passive"
+	"github.com/tutu-network/tutu/internal/infra/planetary"
 	"github.com/tutu-network/tutu/internal/infra/region"
 	"github.com/tutu-network/tutu/internal/infra/registry"
 	"github.com/tutu-network/tutu/internal/infra/reputation"
@@ -39,6 +42,7 @@ import (
 	"github.com/tutu-network/tutu/internal/infra/scheduler"
 	"github.com/tutu-network/tutu/internal/infra/selfheal"
 	"github.com/tutu-network/tutu/internal/infra/sqlite"
+	"github.com/tutu-network/tutu/internal/infra/universal"
 	"github.com/tutu-network/tutu/internal/mcp"
 	"github.com/tutu-network/tutu/internal/security"
 )
@@ -97,6 +101,12 @@ type Daemon struct {
 	AutoScaler   *autoscale.Scaler
 	SelfHeal     *selfheal.Mesh
 	Intelligence *intelligence.Optimizer
+
+	// Phase 7 components — event horizon: world's largest
+	Planetary  *planetary.TopologyManager
+	Access     *universal.AccessManager
+	Flywheel   *flywheel.Tracker
+	Democracy  *democracy.Engine
 }
 
 // New creates and initializes a Daemon with all services wired.
@@ -309,6 +319,20 @@ func NewWithConfig(cfg Config) (*Daemon, error) {
 
 	// Network intelligence — model placement optimization + retirement
 	d.Intelligence = intelligence.NewOptimizer(intelligence.DefaultConfig())
+
+	// ─── Phase 7 components ────────────────────────────────────────────
+
+	// Planetary-scale topology — continental mesh routing, model distribution
+	d.Planetary = planetary.NewTopologyManager(planetary.DefaultConfig())
+
+	// Universal access — free/education/pro/enterprise tier enforcement
+	d.Access = universal.NewAccessManager(universal.DefaultConfig())
+
+	// Economic flywheel — self-sustaining economy health monitoring
+	d.Flywheel = flywheel.NewTracker(flywheel.DefaultConfig())
+
+	// AI democracy — community governance for all network parameters
+	d.Democracy = democracy.NewEngine(democracy.DefaultConfig())
 
 	return d, nil
 }
