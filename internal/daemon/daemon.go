@@ -141,22 +141,24 @@ func NewWithConfig(cfg Config) (*Daemon, error) {
 	realBackend, err := engine.NewSubprocessBackend(tutuHome())
 	if err != nil {
 		// llama-server not found — try to auto-download it
-		fmt.Fprintf(os.Stderr, "llama-server not found — downloading automatically...\n")
+		fmt.Fprintf(os.Stderr, "  llama-server not found — downloading automatically...\n")
 		llamaPath, dlErr := engine.DownloadLlamaServer(tutuHome(), func(status string, pct float64) {
-			fmt.Fprintf(os.Stderr, "\r\033[K  %s", status)
+			// Use simple line-based output that works on all terminals (no ANSI codes)
+			fmt.Fprintf(os.Stderr, "\r  %-70s", status)
 		})
 		if dlErr != nil {
 			fmt.Fprintf(os.Stderr, "\n")
-			fmt.Fprintf(os.Stderr, "WARNING: could not auto-download llama-server: %v\n", dlErr)
+			fmt.Fprintf(os.Stderr, "  WARNING: could not auto-download llama-server: %v\n", dlErr)
 			fmt.Fprintf(os.Stderr, "  Using mock backend (no real AI inference).\n")
 			fmt.Fprintf(os.Stderr, "  To fix: install llama-server manually — see https://github.com/ggml-org/llama.cpp/releases\n")
 			backend = engine.NewMockBackend()
 		} else {
 			fmt.Fprintf(os.Stderr, "\n")
+			_ = llamaPath
 			// Retry with the downloaded binary
 			realBackend, err = engine.NewSubprocessBackend(tutuHome())
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "WARNING: downloaded llama-server at %s but cannot use it: %v\n", llamaPath, err)
+				fmt.Fprintf(os.Stderr, "  WARNING: downloaded but cannot use llama-server: %v\n", err)
 				backend = engine.NewMockBackend()
 			} else {
 				backend = realBackend
@@ -165,6 +167,14 @@ func NewWithConfig(cfg Config) (*Daemon, error) {
 	} else {
 		backend = realBackend
 	}
+
+	// Wire up progress callback for model loading feedback
+	if sb, ok := backend.(*engine.SubprocessBackend); ok {
+		sb.SetProgress(func(msg string) {
+			fmt.Fprintf(os.Stderr, "\r  %-70s", msg)
+		})
+	}
+
 	pool := engine.NewPool(backend, parseStorageSize(cfg.Models.MaxStorage), mgr.Resolve)
 
 	// Initialize API server

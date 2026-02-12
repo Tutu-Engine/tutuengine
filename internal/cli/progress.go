@@ -16,8 +16,8 @@ import (
 const barWidth = 30 // Characters for the progress bar
 
 type progressBar struct {
-	started  time.Time
-	total    int64
+	started time.Time
+	total   int64
 }
 
 func newProgressBar() *progressBar {
@@ -153,5 +153,7 @@ func formatSpeed(bytesPerSec int64) string {
 }
 
 func clearLine() {
-	fmt.Fprintf(os.Stderr, "\r\033[K")
+	// Use \r + space padding instead of ANSI \033[K which doesn't work in all
+	// Windows terminals (PowerShell shows raw ←[K).
+	fmt.Fprintf(os.Stderr, "\r%-80s\r", "")
 }

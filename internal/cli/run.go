@@ -32,6 +32,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		prompt = args[1]
 	}
 
+	fmt.Fprintf(os.Stderr, "  Initializing TuTu...\n")
 	d, err := daemon.New()
 	if err != nil {
 		return fmt.Errorf("initialize daemon: %w", err)
@@ -44,7 +45,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if !exists {
-		fmt.Fprintf(os.Stderr, "pulling %s...\n", modelName)
+		fmt.Fprintf(os.Stderr, "  Pulling %s...\n", modelName)
 		pb := newProgressBar()
 		if err := d.Models.Pull(modelName, pb.callback); err != nil {
 			fmt.Fprintln(os.Stderr)
@@ -53,7 +54,8 @@ func runRun(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(os.Stderr)
 	}
 
-	// Acquire model
+	// Acquire model — this starts llama-server and loads the model into memory
+	fmt.Fprintf(os.Stderr, "  Loading %s...\n", modelName)
 	handle, err := d.Pool.Acquire(modelName, engine.LoadOptions{
 		NumGPULayers: -1,
 		NumCtx:       4096,
@@ -62,6 +64,9 @@ func runRun(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("load model: %w", err)
 	}
 	defer handle.Release()
+
+	// Clear the progress line and show ready
+	fmt.Fprintf(os.Stderr, "\r  %-70s\n", "Ready!")
 
 	if prompt != "" {
 		// Single-shot mode

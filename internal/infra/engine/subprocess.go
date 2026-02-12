@@ -14,6 +14,7 @@ package engine
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -25,6 +26,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tutu-network/tutu/internal/domain"
@@ -38,6 +40,9 @@ import (
 // SubprocessBackend manages llama-server processes.
 type SubprocessBackend struct {
 	llamaServerPath string // Path to llama-server executable
+	// ProgressFunc is called during model loading to show feedback.
+	// Set by the daemon before Pool.Acquire is called.
+	ProgressFunc func(status string)
 }
 
 // NewSubprocessBackend creates a backend that uses llama-server.
@@ -49,6 +54,18 @@ func NewSubprocessBackend(tutuHome string) (*SubprocessBackend, error) {
 		return nil, err
 	}
 	return &SubprocessBackend{llamaServerPath: path}, nil
+}
+
+// SetProgress sets the progress callback for model loading status.
+func (b *SubprocessBackend) SetProgress(fn func(string)) {
+	b.ProgressFunc = fn
+}
+
+// progress emits a status message if a callback is set.
+func (b *SubprocessBackend) progress(msg string) {
+	if b.ProgressFunc != nil {
+		b.ProgressFunc(msg)
+	}
 }
 
 // findLlamaServer searches for the llama-server binary.
@@ -120,6 +137,9 @@ func (b *SubprocessBackend) LoadModel(path string, opts LoadOptions) (ModelHandl
 		return nil, fmt.Errorf("model file not found: %w", err)
 	}
 
+	// Kill any orphaned llama-server processes from previous crashed runs
+	killOrphanLlamaServers()
+
 	// Find a free port
 	port, err := findFreePort()
 	if err != nil {
@@ -148,12 +168,17 @@ func (b *SubprocessBackend) LoadModel(path string, opts LoadOptions) (ModelHandl
 		args = append(args, "--threads", fmt.Sprintf("%d", opts.NumThreads))
 	}
 
+	b.progress("Starting llama-server...")
+
+	// Capture stderr in a ring buffer for diagnostics
+	stderrBuf := &limitedBuffer{max: 8192}
+
 	// Start subprocess
 	cmd := exec.Command(b.llamaServerPath, args...)
 	cmd.Stdout = io.Discard
-	cmd.Stderr = io.Discard
+	cmd.Stderr = stderrBuf
 
-	// On Windows, don't show console window
+	// On Windows, don't show console window + allow clean kill
 	configureProcess(cmd)
 
 	if err := cmd.Start(); err != nil {
@@ -162,11 +187,34 @@ func (b *SubprocessBackend) LoadModel(path string, opts LoadOptions) (ModelHandl
 
 	addr := fmt.Sprintf("http://127.0.0.1:%d", port)
 
-	// Wait for server to become ready
-	if err := waitForServer(addr, 120*time.Second); err != nil {
+	// Monitor for early exit in the background
+	earlyExit := make(chan error, 1)
+	go func() {
+		err := cmd.Wait()
+		earlyExit <- err
+	}()
+
+	// Wait for server to become ready with progress feedback
+	modelSize := float64(stat.Size()) / (1024 * 1024)
+	b.progress(fmt.Sprintf("Loading model (%.0f MB) — this may take a minute...", modelSize))
+
+	if err := waitForServerWithFeedback(addr, 5*time.Minute, earlyExit, stderrBuf, b.ProgressFunc); err != nil {
 		cmd.Process.Kill()
+		// Include llama-server stderr in error for diagnostics
+		stderr := strings.TrimSpace(stderrBuf.String())
+		if stderr != "" {
+			// Extract last few lines of stderr for the most useful info
+			lines := strings.Split(stderr, "\n")
+			if len(lines) > 10 {
+				lines = lines[len(lines)-10:]
+			}
+			return nil, fmt.Errorf("llama-server failed to start (model: %s): %w\n\nllama-server output:\n%s",
+				filepath.Base(path), err, strings.Join(lines, "\n"))
+		}
 		return nil, fmt.Errorf("llama-server failed to start (model: %s): %w", filepath.Base(path), err)
 	}
+
+	b.progress("Model loaded — ready!")
 
 	return &SubprocessHandle{
 		cmd:     cmd,
@@ -441,13 +489,24 @@ func (h *SubprocessHandle) Close() {
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, "POST", h.addr+"/shutdown", nil)
 	if req != nil {
-		h.client.Do(req)
+		h.client.Do(req) //nolint:errcheck
 	}
 
-	// Then force kill
-	if h.cmd.Process != nil {
-		h.cmd.Process.Kill()
-		h.cmd.Wait()
+	// Force kill the process and wait for it to exit.
+	// On Windows with CREATE_NEW_PROCESS_GROUP, this kills the entire tree.
+	if h.cmd != nil && h.cmd.Process != nil {
+		h.cmd.Process.Kill() //nolint:errcheck
+		// Wait with a timeout to avoid blocking forever
+		done := make(chan struct{})
+		go func() {
+			h.cmd.Wait() //nolint:errcheck
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			// Process didn't exit, force it
+		}
 	}
 }
 
@@ -464,12 +523,27 @@ func findFreePort() (int, error) {
 	return port, nil
 }
 
-// waitForServer polls the /health endpoint until ready or timeout.
-func waitForServer(addr string, timeout time.Duration) error {
+// waitForServerWithFeedback polls /health until ready, with progress feedback and
+// early-exit detection (if llama-server crashes, we detect it immediately instead
+// of waiting the full timeout).
+func waitForServerWithFeedback(addr string, timeout time.Duration, earlyExit <-chan error, stderrBuf *limitedBuffer, progressFn func(string)) error {
 	deadline := time.Now().Add(timeout)
 	client := &http.Client{Timeout: 2 * time.Second}
+	start := time.Now()
+	lastMsg := time.Time{}
 
 	for time.Now().Before(deadline) {
+		// Check if llama-server exited early (crash)
+		select {
+		case err := <-earlyExit:
+			stderr := strings.TrimSpace(stderrBuf.String())
+			if stderr != "" {
+				return fmt.Errorf("llama-server exited unexpectedly (exit: %v)\n\nOutput:\n%s", err, stderr)
+			}
+			return fmt.Errorf("llama-server exited unexpectedly (exit: %v)", err)
+		default:
+		}
+
 		resp, err := client.Get(addr + "/health")
 		if err == nil {
 			resp.Body.Close()
@@ -477,9 +551,65 @@ func waitForServer(addr string, timeout time.Duration) error {
 				return nil
 			}
 		}
+
+		// Show progress every 5 seconds so user knows we're still working
+		if progressFn != nil && time.Since(lastMsg) > 5*time.Second {
+			elapsed := int(time.Since(start).Seconds())
+			progressFn(fmt.Sprintf("Loading model... (%ds elapsed)", elapsed))
+			lastMsg = time.Now()
+		}
+
 		time.Sleep(500 * time.Millisecond)
 	}
 	return fmt.Errorf("server at %s did not become ready within %v", addr, timeout)
+}
+
+// limitedBuffer is a thread-safe buffer that keeps only the last N bytes.
+// Used to capture llama-server stderr without unbounded memory usage.
+type limitedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+	max int
+}
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	n, err := b.buf.Write(p)
+	// Trim to keep only the last `max` bytes
+	if b.buf.Len() > b.max {
+		data := b.buf.Bytes()
+		b.buf.Reset()
+		b.buf.Write(data[len(data)-b.max:])
+	}
+	return n, err
+}
+
+func (b *limitedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// killOrphanLlamaServers kills any leftover llama-server processes from
+// previous crashed runs. This prevents port/file conflicts.
+func killOrphanLlamaServers() {
+	if runtime.GOOS == "windows" {
+		// On Windows, use taskkill to kill any llama-server.exe processes
+		// that are not part of the current process tree. Silently ignore errors.
+		cmd := exec.Command("taskkill", "/f", "/im", "llama-server.exe")
+		cmd.Stdout = io.Discard
+		cmd.Stderr = io.Discard
+		cmd.Run() // Ignore error — it's fine if no process is found
+	} else {
+		// On Unix, use pkill with -f flag
+		cmd := exec.Command("pkill", "-f", "llama-server")
+		cmd.Stdout = io.Discard
+		cmd.Stderr = io.Discard
+		cmd.Run() // Ignore error
+	}
+	// Small delay to let the OS release ports
+	time.Sleep(500 * time.Millisecond)
 }
 
 // coalesce returns the first non-zero value.
