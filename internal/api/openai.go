@@ -74,8 +74,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	defer handle.Release()
 
-	// Build prompt from messages
-	prompt := buildPrompt(req.Messages)
+	// Build chat messages for the engine
+	chatMsgs := make([]engine.ChatMessage, len(req.Messages))
+	for i, m := range req.Messages {
+		chatMsgs[i] = engine.ChatMessage{Role: m.Role, Content: m.Content}
+	}
 
 	// Set generation params
 	params := defaultGenParams()
@@ -95,14 +98,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	completionID := "chatcmpl-" + uuid.New().String()[:8]
 
 	if req.Stream {
-		s.streamChatResponse(w, r.Context(), handle, prompt, params, req.Model, completionID)
+		s.streamChatResponse(w, r.Context(), handle, chatMsgs, params, req.Model, completionID)
 	} else {
-		s.nonStreamChatResponse(w, r.Context(), handle, prompt, params, req.Model, completionID)
+		s.nonStreamChatResponse(w, r.Context(), handle, chatMsgs, params, req.Model, completionID)
 	}
 }
 
-func (s *Server) nonStreamChatResponse(w http.ResponseWriter, ctx context.Context, handle *engine.PoolHandle, prompt string, params engine.GenerateParams, model, completionID string) {
-	tokenCh, err := handle.Model().Generate(ctx, prompt, params)
+func (s *Server) nonStreamChatResponse(w http.ResponseWriter, ctx context.Context, handle *engine.PoolHandle, messages []engine.ChatMessage, params engine.GenerateParams, model, completionID string) {
+	tokenCh, err := handle.Model().Chat(ctx, messages, params)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -110,7 +113,12 @@ func (s *Server) nonStreamChatResponse(w http.ResponseWriter, ctx context.Contex
 
 	// Collect all tokens
 	var content string
-	promptTokens := len(prompt) / 4 // Rough estimate
+	// Rough estimate of prompt tokens based on message content
+	promptChars := 0
+	for _, m := range messages {
+		promptChars += len(m.Content)
+	}
+	promptTokens := promptChars / 4
 	completionTokens := 0
 
 	for tok := range tokenCh {
@@ -141,8 +149,8 @@ func (s *Server) nonStreamChatResponse(w http.ResponseWriter, ctx context.Contex
 	})
 }
 
-func (s *Server) streamChatResponse(w http.ResponseWriter, ctx context.Context, handle *engine.PoolHandle, prompt string, params engine.GenerateParams, model, completionID string) {
-	tokenCh, err := handle.Model().Generate(ctx, prompt, params)
+func (s *Server) streamChatResponse(w http.ResponseWriter, ctx context.Context, handle *engine.PoolHandle, messages []engine.ChatMessage, params engine.GenerateParams, model, completionID string) {
+	tokenCh, err := handle.Model().Chat(ctx, messages, params)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/tutu-network/tutu/internal/domain"
+	"github.com/tutu-network/tutu/internal/infra/engine"
 )
 
 // ─── Ollama-compatible API (/api/*) ──────────────────────────────────────────
@@ -178,9 +179,12 @@ func (s *Server) handleOllamaChat(w http.ResponseWriter, r *http.Request) {
 	}
 	defer handle.Release()
 
-	prompt := buildPrompt(req.Messages)
+	chatMsgs := make([]engine.ChatMessage, len(req.Messages))
+	for i, m := range req.Messages {
+		chatMsgs[i] = engine.ChatMessage{Role: m.Role, Content: m.Content}
+	}
 	params := defaultGenParams()
-	tokenCh, err := handle.Model().Generate(r.Context(), prompt, params)
+	tokenCh, err := handle.Model().Chat(r.Context(), chatMsgs, params)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

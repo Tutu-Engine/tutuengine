@@ -27,9 +27,16 @@ type InferenceBackend interface {
 // ModelHandle represents a loaded model in memory.
 type ModelHandle interface {
 	Generate(ctx context.Context, prompt string, params GenerateParams) (<-chan domain.Token, error)
+	Chat(ctx context.Context, messages []ChatMessage, params GenerateParams) (<-chan domain.Token, error)
 	Embed(ctx context.Context, input []string) ([][]float32, error)
 	MemoryBytes() uint64
 	Close()
+}
+
+// ChatMessage represents a single message in a chat conversation.
+type ChatMessage struct {
+	Role    string `json:"role"`    // "system", "user", "assistant"
+	Content string `json:"content"` // message text
 }
 
 // LoadOptions configures model loading.

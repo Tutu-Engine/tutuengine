@@ -287,6 +287,107 @@ func (h *SubprocessHandle) Generate(ctx context.Context, prompt string, params G
 	return ch, nil
 }
 
+// Chat sends a chat completion request to llama-server using the /v1/chat/completions
+// endpoint. This lets llama-server apply the model's native chat template automatically
+// (llama3, chatml, phi3, gemma, mistral, etc).
+func (h *SubprocessHandle) Chat(ctx context.Context, messages []ChatMessage, params GenerateParams) (<-chan domain.Token, error) {
+	if h.closed {
+		return nil, fmt.Errorf("model is closed")
+	}
+
+	body := map[string]interface{}{
+		"messages":    messages,
+		"stream":      true,
+		"temperature": params.Temperature,
+		"top_p":       params.TopP,
+	}
+	if params.MaxTokens > 0 {
+		body["max_tokens"] = params.MaxTokens
+	} else {
+		body["max_tokens"] = 1024
+	}
+	if len(params.Stop) > 0 {
+		body["stop"] = params.Stop
+	}
+
+	jsonBody, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", h.addr+"/v1/chat/completions", strings.NewReader(string(jsonBody)))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := h.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("llama-server chat request failed: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return nil, fmt.Errorf("llama-server chat error %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	ch := make(chan domain.Token, 64)
+	go func() {
+		defer close(ch)
+		defer resp.Body.Close()
+
+		scanner := bufio.NewScanner(resp.Body)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+		for scanner.Scan() {
+			line := scanner.Text()
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+			jsonData := strings.TrimPrefix(line, "data: ")
+			if jsonData == "" || jsonData == "[DONE]" {
+				continue
+			}
+
+			// OpenAI-compatible streaming format
+			var chunk struct {
+				Choices []struct {
+					Delta struct {
+						Content string `json:"content"`
+					} `json:"delta"`
+					FinishReason *string `json:"finish_reason"`
+				} `json:"choices"`
+			}
+			if err := json.Unmarshal([]byte(jsonData), &chunk); err != nil {
+				continue
+			}
+
+			if len(chunk.Choices) > 0 {
+				content := chunk.Choices[0].Delta.Content
+				done := chunk.Choices[0].FinishReason != nil
+
+				if content != "" || done {
+					select {
+					case <-ctx.Done():
+						return
+					case ch <- domain.Token{
+						Text: content,
+						Done: done,
+					}:
+					}
+				}
+
+				if done {
+					return
+				}
+			}
+		}
+	}()
+
+	return ch, nil
+}
+
 // Embed generates embeddings via llama-server /embedding endpoint.
 func (h *SubprocessHandle) Embed(ctx context.Context, input []string) ([][]float32, error) {
 	if h.closed {

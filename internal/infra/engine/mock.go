@@ -73,6 +73,19 @@ func (h *MockModelHandle) Generate(ctx context.Context, prompt string, params Ge
 	return ch, nil
 }
 
+// Chat implements ModelHandle.Chat for the mock backend.
+func (h *MockModelHandle) Chat(ctx context.Context, messages []ChatMessage, params GenerateParams) (<-chan domain.Token, error) {
+	// Extract the last user message and delegate to Generate
+	prompt := ""
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			prompt = messages[i].Content
+			break
+		}
+	}
+	return h.Generate(ctx, prompt, params)
+}
+
 func (h *MockModelHandle) Embed(_ context.Context, input []string) ([][]float32, error) {
 	if h.closed {
 		return nil, fmt.Errorf("model is closed")

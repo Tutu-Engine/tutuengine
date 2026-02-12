@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/tutu-network/tutu/internal/daemon"
@@ -72,7 +73,11 @@ func runRun(cmd *cobra.Command, args []string) error {
 }
 
 func generateAndPrint(ctx context.Context, handle *engine.PoolHandle, prompt string) error {
-	tokenCh, err := handle.Model().Generate(ctx, prompt, engine.GenerateParams{
+	messages := []engine.ChatMessage{
+		{Role: "system", Content: "You are a helpful AI assistant."},
+		{Role: "user", Content: prompt},
+	}
+	tokenCh, err := handle.Model().Chat(ctx, messages, engine.GenerateParams{
 		Temperature: 0.7,
 		TopP:        0.9,
 		MaxTokens:   2048,
@@ -91,6 +96,11 @@ func generateAndPrint(ctx context.Context, handle *engine.PoolHandle, prompt str
 func interactiveChat(ctx context.Context, handle *engine.PoolHandle, modelName string) error {
 	fmt.Printf(">>> Chatting with %s (type /bye to exit)\n", modelName)
 
+	// Maintain conversation history for multi-turn chat
+	messages := []engine.ChatMessage{
+		{Role: "system", Content: "You are a helpful AI assistant."},
+	}
+
 	scanner := newLineScanner(os.Stdin)
 	for {
 		fmt.Print(">>> ")
@@ -108,7 +118,10 @@ func interactiveChat(ctx context.Context, handle *engine.PoolHandle, modelName s
 			continue
 		}
 
-		tokenCh, err := handle.Model().Generate(ctx, input, engine.GenerateParams{
+		// Add user message to history
+		messages = append(messages, engine.ChatMessage{Role: "user", Content: input})
+
+		tokenCh, err := handle.Model().Chat(ctx, messages, engine.GenerateParams{
 			Temperature: 0.7,
 			TopP:        0.9,
 			MaxTokens:   2048,
@@ -118,11 +131,17 @@ func interactiveChat(ctx context.Context, handle *engine.PoolHandle, modelName s
 			continue
 		}
 
+		// Collect assistant response for history
+		var response strings.Builder
 		for tok := range tokenCh {
 			fmt.Print(tok.Text)
+			response.WriteString(tok.Text)
 		}
 		fmt.Println()
 		fmt.Println()
+
+		// Add assistant response to history
+		messages = append(messages, engine.ChatMessage{Role: "assistant", Content: response.String()})
 	}
 
 	return nil

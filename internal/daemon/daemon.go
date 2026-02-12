@@ -135,13 +135,33 @@ func NewWithConfig(cfg Config) (*Daemon, error) {
 	mgr := registry.NewManager(modelsDir, db)
 
 	// Initialize inference engine
-	// Try real llama-server subprocess backend first, fall back to mock
+	// Try real llama-server subprocess backend first
+	// If not found, auto-download it from llama.cpp releases
 	var backend engine.InferenceBackend
 	realBackend, err := engine.NewSubprocessBackend(tutuHome())
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "WARNING: llama-server not found, using mock backend (no real AI inference)\n")
-		fmt.Fprintf(os.Stderr, "  Install llama-server for real model inference.\n")
-		backend = engine.NewMockBackend()
+		// llama-server not found — try to auto-download it
+		fmt.Fprintf(os.Stderr, "llama-server not found — downloading automatically...\n")
+		llamaPath, dlErr := engine.DownloadLlamaServer(tutuHome(), func(status string, pct float64) {
+			fmt.Fprintf(os.Stderr, "\r\033[K  %s", status)
+		})
+		if dlErr != nil {
+			fmt.Fprintf(os.Stderr, "\n")
+			fmt.Fprintf(os.Stderr, "WARNING: could not auto-download llama-server: %v\n", dlErr)
+			fmt.Fprintf(os.Stderr, "  Using mock backend (no real AI inference).\n")
+			fmt.Fprintf(os.Stderr, "  To fix: install llama-server manually — see https://github.com/ggml-org/llama.cpp/releases\n")
+			backend = engine.NewMockBackend()
+		} else {
+			fmt.Fprintf(os.Stderr, "\n")
+			// Retry with the downloaded binary
+			realBackend, err = engine.NewSubprocessBackend(tutuHome())
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "WARNING: downloaded llama-server at %s but cannot use it: %v\n", llamaPath, err)
+				backend = engine.NewMockBackend()
+			} else {
+				backend = realBackend
+			}
+		}
 	} else {
 		backend = realBackend
 	}
