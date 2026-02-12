@@ -24,6 +24,7 @@ FROM gcr.io/distroless/static-debian12:nonroot
 WORKDIR /home/nonroot
 
 COPY --from=builder /app/tutu /app/tutu
+COPY --chown=nonroot:nonroot website /app/website
 
 # Use /home/nonroot as TuTu data directory (nonroot user has write access)
 ENV TUTU_HOME=/home/nonroot/.tutu

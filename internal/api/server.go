@@ -5,6 +5,8 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -56,17 +58,20 @@ func (s *Server) Handler() http.Handler {
 	r.Use(middleware.Timeout(5 * time.Minute))
 	r.Use(corsMiddleware)
 
-	// Health
-	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{
-			"status": "TuTu is running",
-		})
-	})
+	// Health check for Railway/Render
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{
 			"status": "ok",
 		})
 	})
+
+	// API status endpoint
+	r.Get("/api/status", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{
+			"status": "TuTu is running",
+		})
+	})
+
 	r.Get("/api/version", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{
 			"version": "0.1.0",
@@ -119,7 +124,42 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/api/earnings/live", s.earningsHub.HandleEarningsSSE)
 	}
 
+	// Serve static website files for all other routes
+	websiteDir := findWebsiteDir()
+	if websiteDir != "" {
+		fileServer := http.FileServer(http.Dir(websiteDir))
+		r.Handle("/*", fileServer)
+	} else {
+		// Fallback if website directory not found
+		r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, map[string]string{
+				"status": "TuTu is running",
+			})
+		})
+	}
+
 	return r
+}
+
+// findWebsiteDir locates the website directory in various contexts.
+func findWebsiteDir() string {
+	// Try common locations
+	candidates := []string{
+		"website",                    // Running from project root
+		"../website",                 // Running from build dir
+		"/app/website",               // Docker container
+		filepath.Join(os.Getenv("TUTU_HOME"), "..", "..", "website"), // Via TUTU_HOME
+	}
+	
+	for _, dir := range candidates {
+		if stat, err := os.Stat(dir); err == nil && stat.IsDir() {
+			// Check if index.html exists
+			if _, err := os.Stat(filepath.Join(dir, "index.html")); err == nil {
+				return dir
+			}
+		}
+	}
+	return ""
 }
 
 // writeJSON writes a JSON response.
