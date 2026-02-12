@@ -1,6 +1,6 @@
 module github.com/tutu-network/tutu
 
-go 1.25.2
+go 1.22
 
 require (
 	github.com/BurntSushi/toml v1.6.0
