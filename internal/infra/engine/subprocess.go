@@ -241,12 +241,16 @@ type SubprocessHandle struct {
 	path    string
 	memSize uint64
 	client  *http.Client
+	mu      sync.Mutex // protects closed
 	closed  bool
 }
 
 // Generate sends a completion request to llama-server and streams tokens back.
 func (h *SubprocessHandle) Generate(ctx context.Context, prompt string, params GenerateParams) (<-chan domain.Token, error) {
-	if h.closed {
+	h.mu.Lock()
+	closed := h.closed
+	h.mu.Unlock()
+	if closed {
 		return nil, fmt.Errorf("model is closed")
 	}
 
@@ -340,7 +344,10 @@ func (h *SubprocessHandle) Generate(ctx context.Context, prompt string, params G
 // endpoint. This lets llama-server apply the model's native chat template automatically
 // (llama3, chatml, phi3, gemma, mistral, etc).
 func (h *SubprocessHandle) Chat(ctx context.Context, messages []ChatMessage, params GenerateParams) (<-chan domain.Token, error) {
-	if h.closed {
+	h.mu.Lock()
+	closed := h.closed
+	h.mu.Unlock()
+	if closed {
 		return nil, fmt.Errorf("model is closed")
 	}
 
@@ -439,7 +446,10 @@ func (h *SubprocessHandle) Chat(ctx context.Context, messages []ChatMessage, par
 
 // Embed generates embeddings via llama-server /embedding endpoint.
 func (h *SubprocessHandle) Embed(ctx context.Context, input []string) ([][]float32, error) {
-	if h.closed {
+	h.mu.Lock()
+	closed := h.closed
+	h.mu.Unlock()
+	if closed {
 		return nil, fmt.Errorf("model is closed")
 	}
 
@@ -478,11 +488,15 @@ func (h *SubprocessHandle) Embed(ctx context.Context, input []string) ([][]float
 func (h *SubprocessHandle) MemoryBytes() uint64 { return h.memSize }
 
 // Close kills the llama-server subprocess and frees resources.
+// Thread-safe: uses mutex to prevent concurrent close races.
 func (h *SubprocessHandle) Close() {
+	h.mu.Lock()
 	if h.closed {
+		h.mu.Unlock()
 		return
 	}
 	h.closed = true
+	h.mu.Unlock()
 
 	// Graceful shutdown: try /shutdown endpoint first
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -523,14 +537,21 @@ func findFreePort() (int, error) {
 	return port, nil
 }
 
-// waitForServerWithFeedback polls /health until ready, with progress feedback and
-// early-exit detection (if llama-server crashes, we detect it immediately instead
-// of waiting the full timeout).
+// waitForServerWithFeedback polls /health until ready, with progress feedback,
+// early-exit detection (if llama-server crashes, we detect it immediately), and
+// exponential backoff to avoid hammering the server during model loading.
+//
+// DSA: Uses exponential backoff with cap (doubles poll interval up to 2s max),
+// which reduces CPU usage during long loads while remaining responsive.
 func waitForServerWithFeedback(addr string, timeout time.Duration, earlyExit <-chan error, stderrBuf *limitedBuffer, progressFn func(string)) error {
 	deadline := time.Now().Add(timeout)
 	client := &http.Client{Timeout: 2 * time.Second}
 	start := time.Now()
 	lastMsg := time.Time{}
+
+	// Exponential backoff: start at 250ms, double each failure, cap at 2s
+	pollInterval := 250 * time.Millisecond
+	maxPollInterval := 2 * time.Second
 
 	for time.Now().Before(deadline) {
 		// Check if llama-server exited early (crash)
@@ -550,6 +571,11 @@ func waitForServerWithFeedback(addr string, timeout time.Duration, earlyExit <-c
 			if resp.StatusCode == http.StatusOK {
 				return nil
 			}
+			// Server is loading — status 503 means model is being loaded
+			if resp.StatusCode == http.StatusServiceUnavailable {
+				// Reset to short poll during active loading
+				pollInterval = 500 * time.Millisecond
+			}
 		}
 
 		// Show progress every 5 seconds so user knows we're still working
@@ -559,7 +585,15 @@ func waitForServerWithFeedback(addr string, timeout time.Duration, earlyExit <-c
 			lastMsg = time.Now()
 		}
 
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(pollInterval)
+
+		// Exponential backoff with cap
+		if pollInterval < maxPollInterval {
+			pollInterval = pollInterval * 2
+			if pollInterval > maxPollInterval {
+				pollInterval = maxPollInterval
+			}
+		}
 	}
 	return fmt.Errorf("server at %s did not become ready within %v", addr, timeout)
 }

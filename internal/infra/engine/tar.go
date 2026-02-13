@@ -42,12 +42,16 @@ func extractAllFromTar(r io.Reader, destDir string) error {
 			continue
 		}
 
-		// Only extract binaries and libraries
+		// Extract all binaries, libraries, and companion files.
+		// llama.cpp ships with several shared libraries that llama-server
+		// dynamically links against: libggml, libllama, libmtmd, libcommon, etc.
+		// Missing ANY of these causes dyld/ld.so errors at runtime.
 		ext := strings.ToLower(filepath.Ext(name))
 		nameLower := strings.ToLower(name)
 		isRelevant := ext == ".exe" || ext == ".dll" || ext == ".so" || ext == ".dylib" ||
 			ext == ".metal" || ext == ".metallib" || ext == "" || // unix binaries have no extension
-			strings.HasPrefix(nameLower, "llama") || strings.HasPrefix(nameLower, "ggml")
+			strings.HasPrefix(nameLower, "llama") || strings.HasPrefix(nameLower, "ggml") ||
+			strings.HasPrefix(nameLower, "lib") // ALL shared libraries: libmtmd, libcommon, etc.
 		if !isRelevant {
 			continue
 		}

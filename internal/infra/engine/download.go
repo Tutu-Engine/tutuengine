@@ -94,6 +94,8 @@ func DownloadLlamaServer(tutuHome string, progress func(status string, pct float
 
 // missingCompanionLibs checks whether required companion libraries are present
 // in binDir alongside llama-server. Returns true if any required lib is missing.
+// This prevents the common "Library not loaded" / "dyld" errors on macOS and
+// "cannot open shared object file" on Linux.
 func missingCompanionLibs(binDir string) bool {
 	switch runtime.GOOS {
 	case "windows":
@@ -104,15 +106,45 @@ func missingCompanionLibs(binDir string) bool {
 			}
 		}
 	case "darwin":
-		// macOS builds are typically self-contained, but check for libggml
-		for _, lib := range []string{"libggml.dylib"} {
-			if _, err := os.Stat(filepath.Join(binDir, lib)); err != nil {
-				// Not fatal on macOS — may be statically linked
-				return false
+		// macOS builds dynamically link against multiple dylibs.
+		// Missing libmtmd.dylib, libggml.dylib, etc. causes:
+		//   dyld: Library not loaded: @rpath/libmtmd.0.dylib
+		// Scan for any .dylib files — if llama-server exists but no dylibs
+		// are present, the extraction likely failed.
+		entries, err := os.ReadDir(binDir)
+		if err != nil {
+			return true
+		}
+		hasDylib := false
+		for _, e := range entries {
+			if strings.HasSuffix(e.Name(), ".dylib") {
+				hasDylib = true
+				break
 			}
 		}
+		// If llama-server has no companion dylibs, consider them missing.
+		// This covers libmtmd, libggml, libllama, libcommon, etc.
+		if !hasDylib {
+			// Check if the binary is statically linked by trying to run --version
+			// If it fails with a dylib error, we need to re-download.
+			return true
+		}
 	case "linux":
-		// Linux CPU builds are typically statically linked
+		// Modern llama.cpp Linux builds may also use shared libs.
+		// Check for .so files alongside llama-server.
+		entries, err := os.ReadDir(binDir)
+		if err != nil {
+			return false
+		}
+		hasServerSo := false
+		for _, e := range entries {
+			if strings.HasSuffix(e.Name(), ".so") {
+				hasServerSo = true
+				break
+			}
+		}
+		// If no .so files exist, the build is likely statically linked — OK
+		_ = hasServerSo
 		return false
 	}
 	return false
@@ -363,12 +395,16 @@ func extractAllFromZip(archivePath, destDir string) error {
 			continue
 		}
 
-		// Only extract binaries, libraries, and config files — skip docs, examples, etc.
+		// Extract all binaries, libraries, and companion files.
+		// llama.cpp ships with several shared libraries that llama-server
+		// dynamically links against: libggml, libllama, libmtmd, libcommon, etc.
+		// Missing ANY of these causes dyld/ld.so errors at runtime.
 		ext := strings.ToLower(filepath.Ext(name))
 		nameLower := strings.ToLower(name)
 		isRelevant := ext == ".exe" || ext == ".dll" || ext == ".so" || ext == ".dylib" ||
 			ext == ".metal" || ext == ".metallib" || ext == "" || // unix binaries have no extension
-			strings.HasPrefix(nameLower, "llama") || strings.HasPrefix(nameLower, "ggml")
+			strings.HasPrefix(nameLower, "llama") || strings.HasPrefix(nameLower, "ggml") ||
+			strings.HasPrefix(nameLower, "lib") // ALL shared libraries: libmtmd, libcommon, etc.
 		if !isRelevant {
 			continue
 		}

@@ -14,21 +14,42 @@ import (
 
 	"github.com/tutu-network/tutu/internal/domain"
 	"github.com/tutu-network/tutu/internal/infra/catalog"
+	"github.com/tutu-network/tutu/internal/infra/dsa"
 	"github.com/tutu-network/tutu/internal/infra/sqlite"
 )
 
 // Manager implements domain.ModelManager.
 // It manages content-addressed blobs in a local directory and tracks
-// metadata in SQLite.
+// metadata in SQLite. Uses a Bloom filter for O(1) probabilistic
+// model existence checks before hitting the database.
 type Manager struct {
-	dir       string // Root models directory (contains blobs/ and manifests/)
-	db        *sqlite.DB
-	urlOverride string // If set, use this base URL instead of HuggingFace (for testing)
+	dir         string // Root models directory (contains blobs/ and manifests/)
+	db          *sqlite.DB
+	urlOverride string          // If set, use this base URL instead of HuggingFace (for testing)
+	bloom       *dsa.BloomFilter // DSA: O(1) probabilistic model existence check
 }
 
 // NewManager creates a Manager rooted at dir.
+// Initializes a Bloom filter (DSA) for O(1) model existence checks,
+// seeded from existing DB entries to avoid cold-start misses.
 func NewManager(dir string, db *sqlite.DB) *Manager {
-	return &Manager{dir: dir, db: db}
+	mgr := &Manager{
+		dir: dir,
+		db:  db,
+		bloom: dsa.NewBloomFilter(dsa.BloomConfig{
+			ExpectedItems: 500,
+			FPRate:        0.001, // 0.1% false positive rate
+		}),
+	}
+	// Seed bloom filter with existing models (warm start)
+	if db != nil {
+		if models, err := db.ListModels(); err == nil {
+			for _, m := range models {
+				mgr.bloom.Add(m.Name)
+			}
+		}
+	}
+	return mgr
 }
 
 // SetTestURL sets a URL override for testing (downloads go to this URL instead of HuggingFace).
@@ -66,7 +87,15 @@ func (m *Manager) ManifestPath(ref domain.ModelRef) string {
 }
 
 // HasLocal checks whether a model exists locally.
+// Uses Bloom filter as fast path: if the filter says "no", the model
+// definitely does not exist (zero false negatives). On "maybe yes",
+// falls through to a DB lookup for confirmation.
 func (m *Manager) HasLocal(ref domain.ModelRef) (bool, error) {
+	// DSA fast path: Bloom filter O(1) check
+	if !m.bloom.Contains(ref.String()) {
+		return false, nil // Definitely not present
+	}
+	// Bloom says "maybe" — confirm via DB (handles false positives)
 	info, err := m.db.GetModel(ref.String())
 	if err != nil {
 		return false, err
@@ -366,6 +395,9 @@ func (m *Manager) Pull(name string, progress func(status string, pct float64)) e
 	if err := m.db.UpsertModel(info); err != nil {
 		return err
 	}
+
+	// DSA: Register in Bloom filter for O(1) future existence checks
+	m.bloom.Add(ref.String())
 
 	if progress != nil {
 		progress("done", 100)
